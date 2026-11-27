@@ -41,3 +41,25 @@ Short ADRs: context, decision, alternatives, consequences.
 **Consequences.** Django's default `objects.all()` still exists, so the rule is enforced by convention and tests, not by the database. Admin intentionally sees all tenants. Bulk operations (`bulk_create`, `update()`) skip `save()` and so skip the FK check. Don't use them for cross-entity writes. The save-time check reuses an already-loaded related object; otherwise it reads only that row's `tenant_id`, so it costs at most one small query per FK.
 
 **Follow-up constraints (review of PR #3).** One active `AgentConfig` per `(tenant, name)` (partial unique index), so the runtime never has to guess which version to load. Evals select a version explicitly. `Tenant.api_token_hash` is unique when not blank. `MeterReading` is unique per `(tenant, contract, read_on)`, so a retried tool call cannot insert a duplicate. Default orderings use plain columns (`conversation_id`, not `conversation`), because ordering by a FK name adds a join.
+
+## ADR-005: Own LLM gateway instead of a framework (B-03)
+
+**Context.** The role asks for an architecture across different LLMs. The agent loop (B-05) and the eval runner (B-10) must run the same code against a fake model in tests and a real one in demos.
+
+**Decision.** A small gateway in `apps/agent/llm/`:
+- provider-neutral pydantic types (`LLMMessage`, `ToolSpec`, `LLMResponse`, `StopReason`, `Usage`) and an `LLMProvider` protocol with a single `complete()` method;
+- one error vocabulary (`LLMTransientError` / `LLMTimeoutError` / `LLMRateLimitError` / `LLMPermanentError`), mapped from SDK exceptions in exactly one function per provider;
+- `RetryingProvider`, the only retry layer (exponential backoff with full jitter, honours `retry-after`, transient errors only). The SDK client is created with `max_retries=0`, so nothing is retried twice over;
+- `FakeProvider` (scripted or echo) for tests and key-less runs. A test-wide guard blocks non-local network connections;
+- `registry.build_provider(agent_config)`, so switching provider is the `AgentConfig.provider` field.
+
+Anthropic specifics (per the current Claude API guidance):
+- default model `claude-opus-5-5`, effort set explicitly (`medium`; the API default on this model);
+- no `thinking` parameter, because thinking can't be disabled on this model;
+- `tool_choice` left at `auto`;
+- server-side refusal fallbacks on by default (`fallbacks="default"`, beta `server-side-fallback-2026-07-01`); a refusal is a `StopReason`, not an exception;
+- the raw assistant content blocks are stored in an opaque `ProviderState` and replayed unchanged, because thinking blocks must be sent back as returned. Blocks before a mid-output `fallback` are dropped per the echo rules.
+
+**Alternatives.** LangChain or LiteLLM give multi-provider support for free, but hide the request shape, retries and error classes, and the point here is to show those mechanics. Using the SDK's built-in retries is simpler, but then retry policy and logging live in two places.
+
+**Consequences.** Adding a provider means one class with a request builder, a response converter and an error mapper. `ProviderState` ties replayed history to the provider that produced it; another provider rebuilds assistant turns from the neutral fields. Pricing is a hand-maintained table (`pricing.py`, dated), so cost figures are estimates.
