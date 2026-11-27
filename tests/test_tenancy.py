@@ -1,13 +1,17 @@
 """Tenant isolation (B-02 acceptance): tenant B never sees tenant A's data."""
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager as ContextManager
 from dataclasses import dataclass
 from datetime import date
 
 import pytest
 from django.apps import apps
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from apps.conversations.models import Conversation, Message
-from apps.crm_mock.models import Contract, Customer, Invoice
+from apps.crm_mock.models import Contract, Customer, Invoice, MeterReading
 from apps.knowledge.models import KnowledgeDoc
 from apps.tenants.models import AgentConfig, Tenant, TenantMismatchError, TenantScopedModel
 from apps.tenants.seed import seed_demo
@@ -142,3 +146,66 @@ def test_seed_demo_creates_two_tenants_and_is_idempotent() -> None:
         assert Customer.objects.for_tenant(tenant).exists()
         assert AgentConfig.objects.for_tenant(tenant).filter(prompt_version="v1").exists()
     assert Customer.objects.count() == first.customers
+
+
+# --- Constraints and query cost (review of PR #3) ---------------------------------------
+
+
+def test_meter_reading_is_unique_per_contract_and_day(tenant_a: TenantData) -> None:
+    MeterReading.objects.create(
+        tenant=tenant_a.tenant, contract=tenant_a.contract, value_kwh=100, read_on=date(2026, 11, 20)
+    )
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        MeterReading.objects.create(
+            tenant=tenant_a.tenant, contract=tenant_a.contract, value_kwh=100, read_on=date(2026, 11, 20)
+        )
+
+
+def test_api_token_hash_is_unique_but_blank_is_allowed_for_many(db: None) -> None:
+    Tenant.objects.create(name="One", slug="one")
+    Tenant.objects.create(name="Two", slug="two")  # both blank: fine
+    Tenant.objects.create(name="Three", slug="three", api_token_hash="a" * 64)
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        Tenant.objects.create(name="Four", slug="four", api_token_hash="a" * 64)
+
+
+def test_only_one_active_agent_config_per_tenant_and_name(tenant_a: TenantData) -> None:
+    # tenant_a already has an active "support" v1.
+    AgentConfig.objects.create(
+        tenant=tenant_a.tenant, prompt_version="v2", system_prompt="v2", is_active=False
+    )
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        AgentConfig.objects.create(tenant=tenant_a.tenant, prompt_version="v3", system_prompt="v3")
+
+
+def test_same_tenant_check_costs_at_most_one_query_per_fk(
+    tenant_a: TenantData, django_assert_num_queries: Callable[..., ContextManager[None]]
+) -> None:
+    # Only the id is set, so the related row is not loaded: 1 SELECT tenant_id + 1 INSERT.
+    with django_assert_num_queries(2):
+        Conversation.objects.create(tenant=tenant_a.tenant, customer_id=tenant_a.customer.pk)
+
+    # The related object is already loaded: no extra query, just the INSERT.
+    with django_assert_num_queries(1):
+        Conversation.objects.create(tenant=tenant_a.tenant, customer=tenant_a.customer)
+
+
+def test_default_ordering_does_not_join_the_tenant_table(tenant_a: TenantData) -> None:
+    for model in [Customer, Contract, Invoice, KnowledgeDoc, Conversation, Message, AgentConfig]:
+        sql = str(model.objects.for_tenant(tenant_a.tenant).query)
+        assert "tenants_tenant" not in sql, model.__name__
+    assert "conversations_conversation" not in str(Message.objects.for_tenant(tenant_a.tenant).query)
+
+
+@pytest.mark.django_db
+def test_seeded_overdue_invoices_are_past_due() -> None:
+    seed_demo()
+    today = timezone.localdate()
+
+    for invoice in Invoice.objects.filter(status=Invoice.Status.OVERDUE):
+        assert invoice.due_on < today
+    for invoice in Invoice.objects.filter(status=Invoice.Status.OPEN):
+        assert invoice.due_on >= today
