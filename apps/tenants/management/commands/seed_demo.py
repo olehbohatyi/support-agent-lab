@@ -4,7 +4,10 @@ from apps.tenants.seed import seed_demo
 
 
 class Command(BaseCommand):
-    help = "Create or update the two synthetic demo tenants with customers, contracts and invoices."
+    help = (
+        "Create or reset the two synthetic demo tenants with customers, contracts and invoices. "
+        "Re-running overwrites admin edits to the seeded rows (e.g. the v1 system prompt)."
+    )
 
     def handle(self, *args: object, **options: object) -> None:
         result = seed_demo()

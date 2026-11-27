@@ -1,16 +1,18 @@
 """Synthetic demo data: two fictional utility providers with a few customers each.
 
 Idempotent: running it twice updates the same rows instead of duplicating them.
+It also resets them: edits made in the admin (e.g. a prompt) are overwritten.
 All names, addresses and contacts are placeholders (Musterstadt, example.com).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 
 from apps.crm_mock.models import Contract, Customer, Invoice
 from apps.tenants.models import AgentConfig, Tenant
@@ -119,6 +121,13 @@ _TENANTS: dict[str, tuple[str, list[_CustomerSeed]]] = {
 }
 
 
+def _invoice_dates(status: str, today: date) -> dict[str, date]:
+    """Dates relative to today, so "overdue" really is past due and "open" is not."""
+    if status == Invoice.Status.OPEN:
+        return {"issued_on": today - timedelta(days=7), "due_on": today + timedelta(days=14)}
+    return {"issued_on": today - timedelta(days=45), "due_on": today - timedelta(days=15)}
+
+
 @dataclass(frozen=True)
 class SeedResult:
     tenants: int
@@ -128,6 +137,7 @@ class SeedResult:
 @transaction.atomic
 def seed_demo() -> SeedResult:
     customers = 0
+    today = timezone.localdate()
     for slug, (name, people) in _TENANTS.items():
         tenant, _ = Tenant.objects.update_or_create(slug=slug, defaults={"name": name})
         AgentConfig.objects.update_or_create(
@@ -168,8 +178,7 @@ def seed_demo() -> SeedResult:
                     "contract": contract,
                     "amount": Decimal(p.amount),
                     "status": p.status,
-                    "issued_on": date(2026, 11, 1),
-                    "due_on": date(2026, 11, 15),
+                    **_invoice_dates(p.status, today),
                 },
             )
             customers += 1
