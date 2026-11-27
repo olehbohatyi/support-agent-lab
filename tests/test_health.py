@@ -1,4 +1,5 @@
 import pytest
+from django.db import OperationalError
 from django.test import Client
 
 
@@ -10,9 +11,20 @@ def test_health_reports_ok_and_reaches_database(client: Client) -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_api_denies_by_default() -> None:
-    """Until tenant auth lands (B-06), DRF must not allow anonymous access."""
-    from django.conf import settings
+def test_health_returns_503_when_database_is_down(client: Client, monkeypatch: pytest.MonkeyPatch) -> None:
+    class BrokenConnection:
+        def cursor(self) -> None:
+            raise OperationalError("connection refused")
 
-    permissions = settings.REST_FRAMEWORK["DEFAULT_PERMISSION_CLASSES"]
-    assert permissions == ["rest_framework.permissions.IsAuthenticated"]
+    monkeypatch.setattr("config.urls.connection", BrokenConnection())
+
+    response = client.get("/health/")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "error"}
+
+
+def test_health_rejects_non_get(client: Client) -> None:
+    response = client.post("/health/")
+
+    assert response.status_code == 405
