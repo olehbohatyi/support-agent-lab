@@ -19,6 +19,11 @@ def env_bool(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
+def env_list(name: str, default: str = "") -> list[str]:
+    """Comma-separated env var -> list, ignoring spaces and empty items."""
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
 DEBUG = env_bool("DJANGO_DEBUG", default=False)
 
@@ -29,7 +34,7 @@ if not SECRET_KEY:
     else:
         raise RuntimeError("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is false")
 
-ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h]
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -120,5 +125,5 @@ LOGGING = {
         "plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
     },
     "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
-    "root": {"handlers": ["console"], "level": os.environ.get("LOG_LEVEL", "INFO")},
+    "root": {"handlers": ["console"], "level": os.environ.get("LOG_LEVEL", "INFO").upper()},
 }
