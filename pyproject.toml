@@ -26,6 +26,8 @@ extend-exclude = ["**/migrations/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "DJ", "SIM", "RUF"]
+# RUF012 flags Django idioms (Meta.ordering, ModelAdmin.list_display) as mutable class defaults.
+ignore = ["RUF012"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
