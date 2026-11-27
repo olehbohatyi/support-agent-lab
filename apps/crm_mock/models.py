@@ -15,7 +15,7 @@ class Customer(TenantScopedModel):
     language = models.CharField(max_length=2, default="de")
 
     class Meta:
-        ordering = ["tenant", "customer_number"]
+        ordering = ["customer_number"]
         constraints = [
             models.UniqueConstraint(fields=["tenant", "customer_number"], name="uniq_customer_number"),
         ]
@@ -37,7 +37,7 @@ class Contract(TenantScopedModel):
     status = models.CharField(max_length=10, choices=Status, default=Status.ACTIVE)
 
     class Meta:
-        ordering = ["tenant", "contract_number"]
+        ordering = ["contract_number"]
         constraints = [
             models.UniqueConstraint(fields=["tenant", "contract_number"], name="uniq_contract_number"),
         ]
@@ -55,7 +55,11 @@ class MeterReading(TenantScopedModel):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["tenant", "-read_on"]
+        ordering = ["-read_on"]
+        constraints = [
+            # One reading per meter and day: a retried tool call cannot insert a duplicate.
+            models.UniqueConstraint(fields=["tenant", "contract", "read_on"], name="uniq_meter_reading_day"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.contract_id}: {self.value_kwh} kWh on {self.read_on}"
@@ -76,7 +80,7 @@ class Invoice(TenantScopedModel):
     due_on = models.DateField()
 
     class Meta:
-        ordering = ["tenant", "-issued_on"]
+        ordering = ["-issued_on"]
         constraints = [
             models.UniqueConstraint(fields=["tenant", "invoice_number"], name="uniq_invoice_number"),
         ]

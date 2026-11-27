@@ -21,11 +21,20 @@ class Tenant(models.Model):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=64, unique=True)
     # sha256 of the API token; the token itself is never stored (issued in B-06).
-    api_token_hash = models.CharField(max_length=64, blank=True, db_index=True)
+    api_token_hash = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["slug"]
+        constraints = [
+            # B-06 looks tenants up by this hash, so it must identify exactly one tenant.
+            # Blank (no token issued yet) is allowed for many tenants.
+            models.UniqueConstraint(
+                fields=["api_token_hash"],
+                condition=~models.Q(api_token_hash=""),
+                name="uniq_tenant_api_token_hash",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -53,16 +62,30 @@ class TenantScopedModel(models.Model):
         super().save(*args, **kwargs)
 
     def check_same_tenant(self) -> None:
-        """Every FK to another tenant-scoped row must point inside this tenant."""
+        """Every FK to another tenant-scoped row must point inside this tenant.
+
+        Uses the already-loaded related object when there is one; otherwise it reads
+        only that row's tenant_id, so a save costs at most one small query per FK.
+        """
         for field in self._meta.concrete_fields:
             if not isinstance(field, models.ForeignKey) or field.name == "tenant":
                 continue
             if not issubclass(field.related_model, TenantScopedModel):
                 continue
-            related = getattr(self, field.name)
-            if related is not None and related.tenant_id != self.tenant_id:
+            related_id = getattr(self, field.attname)
+            if related_id is None:
+                continue
+            if field.is_cached(self):
+                related_tenant_id = getattr(self, field.name).tenant_id
+            else:
+                related_tenant_id = (
+                    field.related_model._base_manager.filter(pk=related_id)
+                    .values_list("tenant_id", flat=True)
+                    .first()
+                )
+            if related_tenant_id != self.tenant_id:
                 raise TenantMismatchError(
-                    f"{type(self).__name__}.{field.name} belongs to tenant {related.tenant_id}, "
+                    f"{type(self).__name__}.{field.name} belongs to tenant {related_tenant_id}, "
                     f"not {self.tenant_id}"
                 )
 
@@ -87,10 +110,17 @@ class AgentConfig(TenantScopedModel):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["tenant", "name", "prompt_version"]
+        ordering = ["name", "prompt_version"]
         constraints = [
             models.UniqueConstraint(
                 fields=["tenant", "name", "prompt_version"], name="uniq_agentconfig_version"
+            ),
+            # The runtime loads "the active config" by (tenant, name), so there can be only one.
+            # Evals pick a version explicitly and don't need it to be active.
+            models.UniqueConstraint(
+                fields=["tenant", "name"],
+                condition=models.Q(is_active=True),
+                name="uniq_agentconfig_active",
             ),
         ]
 
