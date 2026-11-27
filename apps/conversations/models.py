@@ -20,7 +20,7 @@ class Conversation(TenantScopedModel):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["tenant", "-created_at"]
+        ordering = ["-created_at"]
 
     def __str__(self) -> str:
         return f"Conversation {self.pk} ({self.status})"
@@ -44,7 +44,8 @@ class Message(TenantScopedModel):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["conversation", "created_at", "id"]
+        # "conversation_id", not "conversation": a FK name sorts by Conversation's ordering via a join.
+        ordering = ["conversation_id", "created_at", "id"]
 
     def __str__(self) -> str:
         return f"{self.role}: {self.content[:40]}"

@@ -22,7 +22,7 @@ class KnowledgeDoc(TenantScopedModel):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["tenant", "title"]
+        ordering = ["title"]
         indexes = [GinIndex(fields=["search_vector"], name="kb_search_vector_gin")]
         constraints = [
             # load_kb upserts by file path; docs without a path are not deduplicated.
